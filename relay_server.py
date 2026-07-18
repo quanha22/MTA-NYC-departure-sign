@@ -28,8 +28,8 @@ from nyct_gtfs import NYCTFeed
 
 app = Flask(__name__)
 
-STOP_NORTH = "N10N"  # uptown / toward 96 St
-STOP_SOUTH = "N10S"  # downtown / toward Manhattan-Coney Island
+STOP_NORTH = "Q04N"  # uptown / toward 96 St
+STOP_SOUTH = "Q04S"  # downtown / toward Manhattan-Coney Island
 MAX_RESULTS = 4
 
 
