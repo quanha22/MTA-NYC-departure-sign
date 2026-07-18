@@ -71,6 +71,41 @@ def departures():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/debug")
+def debug():
+    """Temporary diagnostic endpoint - shows raw feed data to help
+    figure out why departures might be coming back empty. Safe to
+    remove once things are working."""
+    try:
+        feed = NYCTFeed("N")
+        q_trains = feed.filter_trips(line_id="Q")
+
+        now_dt = time.time()
+        sample = []
+        stop_ids_seen = set()
+
+        for train in q_trains[:5]:
+            for stu in train.stop_time_updates:
+                stop_ids_seen.add(stu.stop_id)
+                if stu.stop_id in (STOP_NORTH, STOP_SOUTH):
+                    sample.append({
+                        "stop_id": stu.stop_id,
+                        "stop_name": stu.stop_name,
+                        "raw_arrival": str(stu.arrival),
+                    })
+
+        return jsonify({
+            "server_time_now": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_dt)),
+            "server_timezone": time.tzname,
+            "feed_last_generated": str(feed.last_generated),
+            "num_q_trains_total": len(q_trains),
+            "sample_stop_ids_seen": list(stop_ids_seen)[:20],
+            "sample_86st_matches": sample,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
