@@ -23,6 +23,8 @@ already set up to work there via gunicorn and the PORT env var.
 
 import os
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify
 from nyct_gtfs import NYCTFeed
 
@@ -31,6 +33,7 @@ app = Flask(__name__)
 STOP_NORTH = "Q04N"  # uptown / toward 96 St
 STOP_SOUTH = "Q04S"  # downtown / toward Manhattan-Coney Island
 MAX_RESULTS = 4
+NY_TZ = ZoneInfo("America/New_York")
 
 
 def get_departures():
@@ -56,10 +59,15 @@ def get_departures():
     north.sort()
     south.sort()
 
+    local_now = datetime.now(NY_TZ)
+
     return {
         "north": north[:MAX_RESULTS],
         "south": south[:MAX_RESULTS],
         "updated": int(now),
+        "hour": local_now.hour,       # 24-hour, 0-23, America/New_York
+        "minute": local_now.minute,
+        "second": local_now.second,
     }
 
 
