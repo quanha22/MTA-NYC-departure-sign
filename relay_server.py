@@ -1,19 +1,44 @@
 """
-NYC MTA Q Train Departure Relay Server
-----------------------------------------
+NYC MTA Q Train + M15 Bus + Weather Relay Server
+--------------------------------------------------
 Run this on a Raspberry Pi, spare computer, or small cloud host — NOT on
 the MatrixPortal M4 itself. The M4 doesn't have enough RAM (or a real
 protobuf library) to decode MTA's GTFS-realtime feed directly, so this
 server does the heavy lifting and exposes plain JSON that the M4 can
 fetch over plain HTTP.
 
+Everything is bundled into ONE endpoint (/departures) on purpose: the
+MatrixPortal's WiFi co-processor is known to be flaky with repeated
+HTTPS/TLS connections, so the fewer separate requests the board has to
+make, the better. One fetch gets subway + bus + weather + clock.
+
 Q trains run on the MTA's "NQRW" realtime feed. 86 St (Second Ave
-Subway) has parent stop id N10:
-    N10N = northbound platform (toward 96 St)
-    N10S = southbound platform (toward Manhattan / Coney Island)
+Subway) has parent stop id Q04:
+    Q04N = northbound platform (toward 96 St)
+    Q04S = southbound platform (toward Manhattan / Coney Island)
+
+M15 bus data comes from MTA Bus Time's SIRI API, which (unlike the
+subway feeds) requires its own free API key:
+    1. Register at https://bustime.mta.info/wiki/Developers/Index
+       You'll get a key by email, usually within ~30 minutes.
+    2. Set it as an environment variable called MTA_BUS_API_KEY on
+       wherever you're hosting this (e.g. Render's dashboard -> your
+       service -> Environment tab). Do NOT hardcode it in this file.
+
+M15_STOP_ID below is a PLACEHOLDER and almost certainly wrong for your
+exact corner -- unlike the subway stop ID, this one couldn't be
+verified from official data, so it needs to be looked up manually:
+    1. Go to https://bustime.mta.info
+    2. Search "2 Av & E 89 St" (or your cross street)
+    3. Click the southbound M15 stop marker on the map
+    4. The stop code shown (a 6-digit number) is what goes below
+
+Weather comes from the National Weather Service (api.weather.gov),
+free, no key required, using the Central Park observation station
+(KNYC) -- the nearest official NWS station to the Upper East Side.
 
 Local install/run:
-    pip install nyct-gtfs flask gunicorn
+    pip install nyct-gtfs flask gunicorn requests
     python relay_server.py
     -> http://localhost:5000/departures
 
@@ -25,6 +50,7 @@ import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import requests
 from flask import Flask, jsonify
 from nyct_gtfs import NYCTFeed
 
@@ -35,8 +61,15 @@ STOP_SOUTH = "Q04S"  # downtown / toward Manhattan-Coney Island
 MAX_RESULTS = 4
 NY_TZ = ZoneInfo("America/New_York")
 
+MTA_BUS_API_KEY = os.environ.get("MTA_BUS_API_KEY")
+M15_STOP_ID = "401490"  # PLACEHOLDER -- replace with your real stop code, see above
+BUS_SIRI_URL = "https://bustime.mta.info/api/siri/stop-monitoring.json"
 
-def get_departures():
+NWS_STATION = "KNYC"  # Central Park
+NWS_USER_AGENT = "haquan2288@gmail.com"
+
+
+def get_subway_times():
     # "N" pulls the whole NQRW feed; the Q rides along on it.
     feed = NYCTFeed("N")
     q_trains = feed.filter_trips(line_id="Q")
@@ -58,12 +91,85 @@ def get_departures():
 
     north.sort()
     south.sort()
+    return north[:MAX_RESULTS], south[:MAX_RESULTS]
 
+
+def get_bus_times():
+    if not MTA_BUS_API_KEY:
+        return []  # not configured yet -- fail quietly, sign just shows N/A
+
+    params = {
+        "key": MTA_BUS_API_KEY,
+        "MonitoringRef": M15_STOP_ID,
+        "LineRef": "MTA NYCT_M15",
+    }
+    resp = requests.get(BUS_SIRI_URL, params=params, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+
+    visits = (
+        data.get("Siri", {})
+        .get("ServiceDelivery", {})
+        .get("StopMonitoringDelivery", [{}])[0]
+        .get("MonitoredStopVisit", [])
+    )
+
+    now = time.time()
+    mins = []
+    for visit in visits:
+        call = visit.get("MonitoredVehicleJourney", {}).get("MonitoredCall", {})
+        arrival_str = call.get("ExpectedArrivalTime") or call.get("ExpectedDepartureTime")
+        if not arrival_str:
+            continue
+        try:
+            arrival_dt = datetime.fromisoformat(arrival_str)
+        except ValueError:
+            continue
+        m = int((arrival_dt.timestamp() - now) / 60)
+        if m >= 0:
+            mins.append(m)
+
+    mins.sort()
+    return mins[:MAX_RESULTS]
+
+
+def get_weather():
+    headers = {"User-Agent": NWS_USER_AGENT}
+    url = f"https://api.weather.gov/stations/{NWS_STATION}/observations/latest"
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    props = resp.json().get("properties", {})
+
+    temp_c = props.get("temperature", {}).get("value")
+    temp_f = round(temp_c * 9 / 5 + 32) if temp_c is not None else None
+    conditions = props.get("textDescription") or "Unknown"
+
+    return {"temp_f": temp_f, "conditions": conditions}
+
+
+def get_departures():
+    now = time.time()
     local_now = datetime.now(NY_TZ)
 
+    north, south = get_subway_times()
+
+    try:
+        m15_south = get_bus_times()
+    except Exception as e:
+        print("Bus fetch failed:", e)
+        m15_south = []
+
+    try:
+        weather = get_weather()
+    except Exception as e:
+        print("Weather fetch failed:", e)
+        weather = {"temp_f": None, "conditions": "Unknown"}
+
     return {
-        "north": north[:MAX_RESULTS],
-        "south": south[:MAX_RESULTS],
+        "north": north,
+        "south": south,
+        "m15_south": m15_south,
+        "weather": weather,
         "updated": int(now),
         "hour": local_now.hour,       # 24-hour, 0-23, America/New_York
         "minute": local_now.minute,
@@ -76,41 +182,6 @@ def departures():
     try:
         return jsonify(get_departures())
     except Exception as e:  # keep the sign alive even if MTA hiccups
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/debug")
-def debug():
-    """Temporary diagnostic endpoint - shows raw feed data to help
-    figure out why departures might be coming back empty. Safe to
-    remove once things are working."""
-    try:
-        feed = NYCTFeed("N")
-        q_trains = feed.filter_trips(line_id="Q")
-
-        now_dt = time.time()
-        sample = []
-        stop_ids_seen = set()
-
-        for train in q_trains[:5]:
-            for stu in train.stop_time_updates:
-                stop_ids_seen.add(stu.stop_id)
-                if stu.stop_id in (STOP_NORTH, STOP_SOUTH):
-                    sample.append({
-                        "stop_id": stu.stop_id,
-                        "stop_name": stu.stop_name,
-                        "raw_arrival": str(stu.arrival),
-                    })
-
-        return jsonify({
-            "server_time_now": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_dt)),
-            "server_timezone": time.tzname,
-            "feed_last_generated": str(feed.last_generated),
-            "num_q_trains_total": len(q_trains),
-            "sample_stop_ids_seen": list(stop_ids_seen)[:20],
-            "sample_86st_matches": sample,
-        })
-    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
