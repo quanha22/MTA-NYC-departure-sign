@@ -62,11 +62,11 @@ MAX_RESULTS = 4
 NY_TZ = ZoneInfo("America/New_York")
 
 MTA_BUS_API_KEY = os.environ.get("MTA_BUS_API_KEY")
-M15_STOP_ID = "401490"  # PLACEHOLDER -- replace with your real stop code, see above
+M15_STOP_ID = "401755"  # PLACEHOLDER -- replace with your real stop code, see above
 BUS_SIRI_URL = "https://bustime.mta.info/api/siri/stop-monitoring.json"
 
 NWS_STATION = "KNYC"  # Central Park
-NWS_USER_AGENT = "haquan2288@gmail.com"
+NWS_USER_AGENT = "mta-departure-sign (replace-with-your-email@example.com)"
 
 
 def get_subway_times():
@@ -182,6 +182,30 @@ def departures():
     try:
         return jsonify(get_departures())
     except Exception as e:  # keep the sign alive even if MTA hiccups
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/debug-bus")
+def debug_bus():
+    """Temporary diagnostic endpoint - shows the raw MTA Bus Time
+    response to help figure out why m15_south might be empty. Safe to
+    remove once things are working."""
+    if not MTA_BUS_API_KEY:
+        return jsonify({"error": "MTA_BUS_API_KEY is not set"}), 500
+
+    params = {
+        "key": MTA_BUS_API_KEY,
+        "MonitoringRef": M15_STOP_ID,
+        "LineRef": "MTA NYCT_M15",
+    }
+    try:
+        resp = requests.get(BUS_SIRI_URL, params=params, timeout=10)
+        return jsonify({
+            "stop_id_used": M15_STOP_ID,
+            "http_status": resp.status_code,
+            "raw_response": resp.json(),
+        })
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
