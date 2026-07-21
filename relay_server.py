@@ -62,11 +62,11 @@ MAX_RESULTS = 4
 NY_TZ = ZoneInfo("America/New_York")
 
 MTA_BUS_API_KEY = os.environ.get("MTA_BUS_API_KEY")
-M15_STOP_ID = "401755"  # PLACEHOLDER -- replace with your real stop code, see above
+M15_STOP_ID = "403343"  # PLACEHOLDER -- replace with your real stop code, see above
 BUS_SIRI_URL = "https://bustime.mta.info/api/siri/stop-monitoring.json"
 
 NWS_STATION = "KNYC"  # Central Park
-NWS_USER_AGENT = "mta-departure-sign (replace-with-your-email@example.com)"
+NWS_USER_AGENT = "haquan2288@gmail.com"
 
 
 def get_subway_times():
